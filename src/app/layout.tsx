@@ -22,7 +22,7 @@ export default function RootLayout({
       <body
         className={`${inter.variable} antialiased bg-neutral-200 flex justify-center items-center h-screen`}
       >
-        <div className="relative w-full max-w-[420px] min-w-[320px] h-full max-h-[900px] min-h-[500px] bg-white overflow-hidden">
+        <div className="relative w-full max-w-[420px] min-w-[320px] h-full max-h-[900px] min-h-[500px] bg-black overflow-hidden">
           {children}
         </div>
       </body>
