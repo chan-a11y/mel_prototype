@@ -13,12 +13,19 @@ export async function GET() {
       .map((e) => {
         const charName = e.name.replace(/^\d+[_.\- ]+/, "").trim();
         const hasBoys = fs.existsSync(path.join(dir, e.name, "boys"));
-        const folderFiles = fs.readdirSync(path.join(dir, e.name));
-        const videoFile = folderFiles.find(f => /\.(mp4|mov|webm)$/i.test(f)) ?? "intro.mp4";
+        const folderFiles = fs.readdirSync(path.join(dir, e.name)).filter(f => /\.(mp4|mov|webm)$/i.test(f));
+        const videoFile = folderFiles.find(f => /^intro\./i.test(f)) ?? "intro.mp4";
+        const transitionFile = folderFiles.find(f => /^transition\./i.test(f));
+        const idleFile = folderFiles.find(f => /^idle\./i.test(f));
+        const firstMessageFile = folderFiles.find(f => /^firstmessage\./i.test(f));
+        const base = `/characters/${e.name}`;
         return {
           id: e.name,
           name: charName.charAt(0).toUpperCase() + charName.slice(1),
-          video: `/characters/${e.name}/${videoFile}`,
+          video: `${base}/${videoFile}`,
+          ...(transitionFile && { transitionVideo: `${base}/${transitionFile}` }),
+          ...(idleFile && { idleVideo: `${base}/${idleFile}` }),
+          ...(firstMessageFile && { firstMessageVideo: `${base}/${firstMessageFile}` }),
           hasBoys,
         };
       });

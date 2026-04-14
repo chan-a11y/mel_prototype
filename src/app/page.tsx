@@ -10,6 +10,9 @@ interface Character {
   id: string;
   name: string;
   video: string;
+  transitionVideo?: string;
+  idleVideo?: string;
+  firstMessageVideo?: string;
   hasBoys?: boolean;
 }
 
@@ -18,29 +21,48 @@ interface Caption {
   text: string;
 }
 
-// ── Swipe-left hook (touch + mouse) ───────────────────────────────────
-function useSwipeLeft(cb: () => void, enabled = true) {
+// ── Mobile detection ──────────────────────────────────────────────────
+// Returns null while undetermined (before first effect), then true/false.
+// Starting as `false` would prematurely unmute on mobile before Safari starts autoplay.
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  useEffect(() => {
+    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+  }, []);
+  return isMobile;
+}
+
+// Persists across component remounts — once user unlocks audio, all subsequent videos play unmuted
+let audioUnlocked = false;
+
+// ── Swipe hook (touch + mouse, both directions) ────────────────────────
+function useSwipe(onLeft?: () => void, onRight?: () => void, enabled = true) {
   const ref = useRef<HTMLDivElement>(null);
   const sx = useRef(0);
   const dragging = useRef(false);
-  const cbRef = useRef(cb);
-  useEffect(() => { cbRef.current = cb; });
+  const onLeftRef = useRef(onLeft);
+  const onRightRef = useRef(onRight);
+  useEffect(() => { onLeftRef.current = onLeft; });
+  useEffect(() => { onRightRef.current = onRight; });
 
   useEffect(() => {
     if (!enabled) return;
     const el = ref.current;
     if (!el) return;
 
-    // Touch
     const onTouchStart = (e: TouchEvent) => { sx.current = e.touches[0].clientX; };
     const onTouchEnd = (e: TouchEvent) => {
-      if (sx.current - e.changedTouches[0].clientX > 50) cbRef.current();
+      const dx = sx.current - e.changedTouches[0].clientX;
+      if (dx > 50) onLeftRef.current?.();
+      else if (dx < -50) onRightRef.current?.();
     };
-
-    // Mouse
     const onMouseDown = (e: MouseEvent) => { dragging.current = true; sx.current = e.clientX; };
     const onMouseUp = (e: MouseEvent) => {
-      if (dragging.current && sx.current - e.clientX > 50) cbRef.current();
+      if (dragging.current) {
+        const dx = sx.current - e.clientX;
+        if (dx > 50) onLeftRef.current?.();
+        else if (dx < -50) onRightRef.current?.();
+      }
       dragging.current = false;
     };
     const onMouseLeave = () => { dragging.current = false; };
@@ -63,12 +85,45 @@ function useSwipeLeft(cb: () => void, enabled = true) {
   return ref;
 }
 
+function useSwipeLeft(cb: () => void, enabled = true) {
+  return useSwipe(cb, undefined, enabled);
+}
+
 // ── Shared: MirrorView ─────────────────────────────────────────────────
 function MirrorView({
   micOn, camOn, onClick,
 }: {
   micOn: boolean; camOn: boolean; onClick: () => void;
 }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    if (camOn) {
+      navigator.mediaDevices?.getUserMedia({ video: { facingMode: "user" }, audio: false })
+        .then(stream => {
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play().catch(() => {});
+          }
+        })
+        .catch(() => {});
+    } else {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [camOn]);
+
   return (
     <div
       className="absolute left-6 top-[24px] flex flex-col items-end justify-end gap-7 w-[100px] cursor-pointer z-10"
@@ -76,9 +131,17 @@ function MirrorView({
     >
       <div className="relative w-full h-[100px] rounded-full shrink-0">
         <div className="absolute inset-0 rounded-full overflow-hidden bg-[#2a2a2a] flex items-center justify-center">
-          <svg className="w-8 h-8 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
-          </svg>
+          {!camOn && (
+            <svg className="w-8 h-8 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
+            </svg>
+          )}
+          <video
+            ref={videoRef}
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ display: camOn ? "block" : "none" }}
+            muted playsInline
+          />
         </div>
       </div>
       <div
@@ -157,7 +220,6 @@ function useMirrorMenu() {
 // ── Discover Screen ────────────────────────────────────────────────────
 function DiscoverScreen({ onSwipeLeft }: { onSwipeLeft: () => void }) {
   const swipeRef = useSwipeLeft(onSwipeLeft);
-  const { micOn, camOn, menuOpen, setMenuOpen, menuRef, mirrorRef, onMicToggle, onCamToggle } = useMirrorMenu();
 
   return (
     <div ref={swipeRef} className="absolute inset-0 bg-[#0d0d0d] overflow-hidden">
@@ -168,16 +230,6 @@ function DiscoverScreen({ onSwipeLeft }: { onSwipeLeft: () => void }) {
         ))}
       </div>
       <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/20 to-black/80 pointer-events-none" />
-
-      {/* Mirror cam */}
-      <div ref={mirrorRef}>
-        <MirrorView micOn={micOn} camOn={camOn} onClick={() => setMenuOpen(v => !v)} />
-      </div>
-      {menuOpen && (
-        <div ref={menuRef}>
-          <MirrorMenu micOn={micOn} camOn={camOn} onMicToggle={onMicToggle} onCamToggle={onCamToggle} />
-        </div>
-      )}
 
       {/* Swipe CTA */}
       <div className="absolute bottom-[22%] left-0 right-0 flex flex-col items-center gap-2 pointer-events-none">
@@ -212,7 +264,6 @@ function SearchingScreen({
       .then(data => { if (data) setLottieData(data); })
       .catch(() => {});
   }, []);
-  const { micOn, camOn, menuOpen, setMenuOpen, menuRef, mirrorRef, onMicToggle, onCamToggle } = useMirrorMenu();
 
   // 2s 후 dissolve out → intro
   useEffect(() => {
@@ -220,7 +271,8 @@ function SearchingScreen({
       setContentVisible(false);
       setTimeout(() => {
         const char = nextCharRef.current;
-        if (!char) return;
+        console.log("[Searching] timer fired, nextChar:", char?.name, char?.id);
+        if (!char) { console.warn("[Searching] nextChar is null — stuck!"); return; }
         onFoundRef.current(char);
       }, 500);
     }, 2000);
@@ -256,16 +308,6 @@ function SearchingScreen({
           Like the vibe?<br />Add before time runs out.
         </p>
       </div>
-
-      {/* Mirror cam */}
-      <div ref={mirrorRef}>
-        <MirrorView micOn={micOn} camOn={camOn} onClick={() => setMenuOpen(v => !v)} />
-      </div>
-      {menuOpen && (
-        <div ref={menuRef}>
-          <MirrorMenu micOn={micOn} camOn={camOn} onMicToggle={onMicToggle} onCamToggle={onCamToggle} />
-        </div>
-      )}
     </div>
   );
 }
@@ -275,16 +317,24 @@ function IntroScreen({
   character,
   onTap,
   onLeave,
+  onGoHome,
 }: {
   character: Character;
   onTap: () => void;
   onLeave: () => void;
+  onGoHome: () => void;
 }) {
   const [contentVisible, setContentVisible] = useState(false);
-  const swipeRef = useSwipeLeft(onLeave);
-  const { micOn, camOn, menuOpen, setMenuOpen, menuRef, mirrorRef, onMicToggle, onCamToggle } = useMirrorMenu();
-  const onLeaveRef = useRef(onLeave);
-  useEffect(() => { onLeaveRef.current = onLeave; });
+  const [muted, setMuted] = useState(true);
+  const [progress, setProgress] = useState(0);
+  // "playing"  : 인트로 비디오 재생 중
+  // "loading"  : 비디오 종료 후 LiveKit 로딩 시뮬레이션 (루프 재생 + 스피너)
+  // "fading"   : 로딩 완료, 화면 fade-out 중
+  const [phase, setPhase] = useState<"playing" | "loading" | "fading">("playing");
+  const phaseRef = useRef<"playing" | "loading" | "fading">("playing");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const isMobile = useIsMobile();
+  const swipeRef = useSwipe(onLeave, onGoHome);
 
   // Dissolve in on mount
   useEffect(() => {
@@ -295,26 +345,67 @@ function IntroScreen({
     return () => cancelAnimationFrame(raf1);
   }, []);
 
-  function handleTap(e: React.MouseEvent) {
-    if (mirrorRef.current?.contains(e.target as Node)) return;
-    if (menuRef.current?.contains(e.target as Node)) return;
-    onTap();
+  // Called once video is ready to play — safe point to unmute without blocking autoplay
+  function handleCanPlay(e: React.SyntheticEvent<HTMLVideoElement>) {
+    const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!mobile || audioUnlocked) {
+      (e.target as HTMLVideoElement).muted = false;
+      setMuted(false);
+    }
+  }
+
+  function toggleMute(e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = !muted;
+    setMuted(next);
+    if (!next) audioUnlocked = true;
+    if (videoRef.current) videoRef.current.muted = next;
+  }
+
+  // 비디오 종료 or 탭 → 로딩 페이즈 시작
+  function handleEnterLoading() {
+    if (phaseRef.current !== "playing") return;
+    phaseRef.current = "loading";
+    setPhase("loading");
+    if (videoRef.current) {
+      videoRef.current.loop = true;
+      videoRef.current.currentTime = 0;
+      videoRef.current.play().catch(() => {});
+    }
+    // LiveKit 로딩 시뮬레이션 (4초)
+    setTimeout(() => {
+      phaseRef.current = "fading";
+      setPhase("fading");
+      setContentVisible(false);       // 500ms fade-out → 검은 화면
+      setTimeout(() => onTap(), 500); // 검은 화면 → ChatroomScreen (fade-in)
+    }, 4000);
   }
 
   return (
-    <div ref={swipeRef} className="absolute inset-0 bg-black overflow-hidden" onClick={handleTap}>
-      {/* Content fades in */}
+    <div
+      ref={swipeRef}
+      className="absolute inset-0 bg-black overflow-hidden"
+      onClick={phase === "playing" ? handleEnterLoading : undefined}
+    >
+      {/* Content fades in / out */}
       <div
         className="absolute inset-0 transition-opacity duration-500 ease-in-out"
         style={{ opacity: contentVisible ? 1 : 0 }}
       >
         <video
+          ref={videoRef}
           className="absolute inset-0 w-full h-full object-cover"
           src={character.video}
-          autoPlay loop playsInline
+          autoPlay playsInline muted
+          onCanPlay={handleCanPlay}
+          onEnded={handleEnterLoading}
+          onTimeUpdate={e => {
+            if (phaseRef.current !== "playing") return;
+            const v = e.currentTarget;
+            if (v.duration) setProgress(v.currentTime / v.duration);
+          }}
         />
 
-        {/* Blur layer — masked so blur fades out toward top */}
         <div
           className="absolute bottom-0 left-0 right-0 h-[260px] backdrop-blur-[12px] pointer-events-none"
           style={{
@@ -322,34 +413,51 @@ function IntroScreen({
             maskImage: "linear-gradient(to top, black 40%, transparent 100%)",
           }}
         />
-        {/* Dark gradient overlay */}
         <div className="absolute bottom-0 left-0 right-0 h-[260px] bg-gradient-to-t from-[rgba(18,18,18,0.6)] via-[rgba(18,18,18,0.3)] to-transparent pointer-events-none" />
-        {/* Footer content */}
         <div className="absolute bottom-0 left-0 right-0 pt-5 pb-10 flex flex-col items-start pointer-events-none">
-          {/* Character name row */}
           <div className="px-5 pb-[14px] w-full">
             <p className="text-white text-[48px] font-extrabold leading-normal">{character.name}</p>
           </div>
-          {/* Tap to start call — input bar style */}
           <div className="px-4 w-full">
-            <div className="flex items-center h-12 bg-white/10 rounded-[24px] pl-4 pr-1 py-1">
-              <p className="flex-1 text-center text-[#e1e1e1] text-[16px] font-medium">Tap to start call</p>
+            <div className="flex items-center justify-center h-12">
+              {phase === "playing" ? (
+                <p className="text-[#e1e1e1] text-[16px] font-medium">Swipe to pass</p>
+              ) : (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              )}
             </div>
           </div>
-          {/* Bottom glow divider */}
-          <div className="mt-4 mx-auto w-px h-px bg-white shadow-[0_0_80px_20px_rgba(255,255,255,0.2)]" />
+          {/* Progress bar — 100% during loading/fading */}
+          <div className="w-full mt-4 h-px relative">
+            <div
+              className="absolute left-0 top-0 h-full bg-white"
+              style={{
+                width: phase === "playing" ? `${progress * 100}%` : "100%",
+                boxShadow: "0 0 20px 6px rgba(255,255,255,0.35)",
+                transition: phase === "playing" ? "width 0.25s linear" : "width 0.3s ease-out",
+              }}
+            />
+          </div>
         </div>
-      </div>
 
-      {/* Mirror cam (always on top, pointer-events own layer) */}
-      <div ref={mirrorRef} onClick={e => e.stopPropagation()}>
-        <MirrorView micOn={micOn} camOn={camOn} onClick={() => setMenuOpen(v => !v)} />
+        {/* Mute toggle — mobile only */}
+        {isMobile && (
+          <button
+            className="absolute bottom-[180px] right-4 w-10 h-10 rounded-full bg-black/40 flex items-center justify-center pointer-events-auto"
+            onClick={toggleMute}
+          >
+            {muted ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+              </svg>
+            )}
+          </button>
+        )}
       </div>
-      {menuOpen && (
-        <div ref={menuRef} onClick={e => e.stopPropagation()}>
-          <MirrorMenu micOn={micOn} camOn={camOn} onMicToggle={onMicToggle} onCamToggle={onCamToggle} />
-        </div>
-      )}
     </div>
   );
 }
@@ -487,25 +595,69 @@ function BoysScreen({
 // ── Chatroom Screen ────────────────────────────────────────────────────
 function ChatroomScreen({
   character,
-  onExit,
+  onSwipeLeft,
+  onSwipeRight,
+  onTimerExit,
 }: {
   character: Character;
-  onExit: () => void;
+  onSwipeLeft: () => void;
+  onSwipeRight: () => void;
+  onTimerExit: () => void;
 }) {
-  const [captionOn, setCaptionOn] = useState(true);
+  const [contentVisible, setContentVisible] = useState(false);
+  const [captionOn, setCaptionOn] = useState(false);
   const [seconds, setSeconds] = useState(120);
   const [captions] = useState<Caption[]>([
     { speaker: "elin", text: "Hi, Good to see you again" },
     { speaker: "chan", text: "You look nice" },
   ]);
-  const swipeRef = useSwipeLeft(onExit);
-  const { micOn, camOn, menuOpen, setMenuOpen, menuRef, mirrorRef, onMicToggle, onCamToggle } = useMirrorMenu();
-  const onExitRef = useRef(onExit);
-  useEffect(() => { onExitRef.current = onExit; });
+  const [muted, setMuted] = useState(true);
+  // firstMessage가 있으면 먼저 재생, 끝나면 idle로 전환
+  const [videoSrc, setVideoSrc] = useState(
+    character.firstMessageVideo ?? character.idleVideo ?? character.video
+  );
+  const [isFirstMessage, setIsFirstMessage] = useState(!!character.firstMessageVideo);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const isMobile = useIsMobile();
+  const swipeRef = useSwipe(onSwipeLeft, onSwipeRight);
+  const onTimerExitRef = useRef(onTimerExit);
+  useEffect(() => { onTimerExitRef.current = onTimerExit; });
+
+  // Fade in from black on mount
+  useEffect(() => {
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => setContentVisible(true));
+      return () => cancelAnimationFrame(raf2);
+    });
+    return () => cancelAnimationFrame(raf1);
+  }, []);
+
+  function handleCanPlayChatroom(e: React.SyntheticEvent<HTMLVideoElement>) {
+    const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!mobile || audioUnlocked) {
+      (e.target as HTMLVideoElement).muted = false;
+      setMuted(false);
+    }
+  }
+
+  // firstMessage 재생 완료 → idle 루프로 전환
+  function handleVideoEnded() {
+    if (!isFirstMessage) return;
+    setIsFirstMessage(false);
+    setVideoSrc(character.idleVideo ?? character.video);
+  }
+
+  function toggleMuteChatroom(e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = !muted;
+    setMuted(next);
+    if (!next) audioUnlocked = true;
+    if (videoRef.current) videoRef.current.muted = next;
+  }
 
   // Timer countdown → exit on zero
   useEffect(() => {
-    if (seconds <= 0) { onExitRef.current(); return; }
+    if (seconds <= 0) { onTimerExitRef.current(); return; }
     const id = setTimeout(() => setSeconds(s => s - 1), 1000);
     return () => clearTimeout(id);
   }, [seconds]);
@@ -518,23 +670,22 @@ function ChatroomScreen({
   while (lines.length < 3) lines.unshift({ speaker: "elin", text: "" });
 
   return (
-    <div ref={swipeRef} className="absolute inset-0 bg-[#121212] overflow-hidden">
+    <div
+      ref={swipeRef}
+      className="absolute inset-0 bg-black overflow-hidden transition-opacity duration-700 ease-in-out"
+      style={{ opacity: contentVisible ? 1 : 0 }}
+    >
       <video
+        ref={videoRef}
+        key={videoSrc}
         className="absolute inset-0 w-full h-full object-cover"
-        src={character.video}
-        autoPlay loop playsInline
+        src={videoSrc}
+        autoPlay playsInline muted
+        loop={!isFirstMessage}
+        onCanPlay={handleCanPlayChatroom}
+        onEnded={handleVideoEnded}
       />
-      <div className="absolute inset-0 bg-gradient-to-b from-[#2a1a0e]/60 via-[#1a1208]/40 to-[#121212] pointer-events-none" />
-
-      {/* Mirror */}
-      <div ref={mirrorRef}>
-        <MirrorView micOn={micOn} camOn={camOn} onClick={() => setMenuOpen(v => !v)} />
-      </div>
-      {menuOpen && (
-        <div ref={menuRef}>
-          <MirrorMenu micOn={micOn} camOn={camOn} onMicToggle={onMicToggle} onCamToggle={onCamToggle} />
-        </div>
-      )}
+      <div className="absolute bottom-0 left-0 right-0 h-[55%] bg-gradient-to-t from-[#121212] via-[#1a1208]/60 to-transparent pointer-events-none" />
 
       {/* Caption box */}
       <div
@@ -550,6 +701,24 @@ function ChatroomScreen({
           </p>
         ))}
       </div>
+
+      {/* Mute toggle — mobile only */}
+      {isMobile && (
+        <button
+          className="absolute top-6 right-4 w-10 h-10 rounded-full bg-black/40 flex items-center justify-center z-10"
+          onClick={toggleMuteChatroom}
+        >
+          {muted ? (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+              <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+            </svg>
+          ) : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            </svg>
+          )}
+        </button>
+      )}
 
       {/* Bottom controls */}
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-[rgba(18,18,18,0.4)] via-[rgba(18,18,18,0.3)] to-[rgba(18,18,18,0)] flex flex-col">
@@ -604,9 +773,15 @@ export default function Home() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [animClass, setAnimClass] = useState("");
   const navigating = useRef(false);
-  const charIndexRef = useRef(0);
+  // ?from=N  → start cycle from the N-th character (1-based, e.g. ?from=9 skips to Chloe)
+  const startIndex = typeof window !== "undefined"
+    ? Math.max(0, (parseInt(new URLSearchParams(window.location.search).get("from") ?? "1", 10) - 1))
+    : 0;
+  const charIndexRef = useRef(startIndex);
   const charactersRef = useRef<Character[]>([]);
   useEffect(() => { charactersRef.current = characters; }, [characters]);
+
+  const { micOn, camOn, menuOpen, setMenuOpen, menuRef, mirrorRef, onMicToggle, onCamToggle } = useMirrorMenu();
 
   useEffect(() => {
     fetch("/api/characters").then(r => r.json()).then(setCharacters);
@@ -619,12 +794,14 @@ export default function Home() {
     type: "slide" | "dissolve" | "slide-back" = "slide",
     char?: Character,
   ) => {
-    if (navigating.current) return;
+    console.log(`[navigate] ${next} (${type}) char=${char?.name ?? "-"} | navigating=${navigating.current} | idx=${charIndexRef.current}`);
+    if (navigating.current) { console.warn("[navigate] BLOCKED by navigating flag"); return; }
     navigating.current = true;
     if (char) {
       setCharacter(char);
       const len = charactersRef.current.length || 1;
       charIndexRef.current = (charIndexRef.current + 1) % len;
+      console.log(`[navigate] charIndex → ${charIndexRef.current} / ${len}`);
     }
 
     if (type === "slide") {
@@ -650,38 +827,53 @@ export default function Home() {
   }, []);
 
   return (
-    <div className={`relative w-full h-full overflow-hidden ${animClass}`}>
-      {screen === "discover" && (
-        <DiscoverScreen onSwipeLeft={() => navigate("searching")} />
-      )}
-      {screen === "searching" && (
-        <SearchingScreen
-          nextChar={nextChar}
-          onFound={(char) => navigate("intro", "dissolve", char)}
-        />
-      )}
-      {screen === "intro" && character && (
-        <IntroScreen
-          character={character}
-          onTap={() => {
-            console.log("[onTap] id:", character.id, "hasBoys:", character.hasBoys);
-            character.hasBoys ? navigate("boys", "slide") : navigate("chatroom", "slide");
-          }}
-          onLeave={() => navigate("searching")}
-        />
-      )}
-      {screen === "boys" && character && (
-        <BoysScreen
-          charId={character.id}
-          onSelect={(boy) => navigate("chatroom", "slide", boy)}
-          onBack={() => navigate("searching", "slide-back")}
-        />
-      )}
-      {screen === "chatroom" && character && (
-        <ChatroomScreen
-          character={character}
-          onExit={() => navigate("searching")}
-        />
+    <div className="relative w-full h-full">
+      {/* Screens — animated */}
+      <div className={`absolute inset-0 overflow-hidden ${animClass}`}>
+        {screen === "discover" && (
+          <DiscoverScreen onSwipeLeft={() => navigate("searching")} />
+        )}
+        {screen === "searching" && (
+          <SearchingScreen
+            nextChar={nextChar}
+            onFound={(char) => navigate("intro", "dissolve", char)}
+          />
+        )}
+        {screen === "intro" && character && (
+          <IntroScreen
+            character={character}
+            onTap={() => {
+              character.hasBoys ? navigate("boys", "slide") : navigate("chatroom", "dissolve");
+            }}
+            onLeave={() => navigate("searching")}
+            onGoHome={() => navigate("discover", "slide-back")}
+          />
+        )}
+        {screen === "boys" && character && (
+          <BoysScreen
+            charId={character.id}
+            onSelect={(boy) => navigate("chatroom", "dissolve", boy)}
+            onBack={() => navigate("discover", "slide-back")}
+          />
+        )}
+        {screen === "chatroom" && character && (
+          <ChatroomScreen
+            character={character}
+            onSwipeLeft={() => navigate("searching")}
+            onSwipeRight={() => navigate("discover", "slide-back")}
+            onTimerExit={() => navigate("searching")}
+          />
+        )}
+      </div>
+
+      {/* MirrorView — persistent across all screens */}
+      <div ref={mirrorRef} className="absolute z-50">
+        <MirrorView micOn={micOn} camOn={camOn} onClick={() => setMenuOpen(v => !v)} />
+      </div>
+      {menuOpen && (
+        <div ref={menuRef} className="absolute z-50">
+          <MirrorMenu micOn={micOn} camOn={camOn} onMicToggle={onMicToggle} onCamToggle={onCamToggle} />
+        </div>
       )}
 
       <style>{`

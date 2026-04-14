@@ -23,15 +23,19 @@ export async function GET(request: Request) {
       .sort((a, b) => parseInt(a.name, 10) - parseInt(b.name, 10))
       .map((e) => {
         const boyName = e.name.replace(/^\d+[_.\- ]+/, "").trim();
-        const basePath = charId
+        const base = charId
           ? `/characters/${charId}/boys/${e.name}`
           : `/boys/${e.name}`;
-        const folderFiles = fs.readdirSync(path.join(dir, e.name));
-        const videoFile = folderFiles.find(f => /\.(mp4|mov|webm)$/i.test(f)) ?? "intro.mp4";
+        const folderFiles = fs.readdirSync(path.join(dir, e.name)).filter(f => /\.(mp4|mov|webm)$/i.test(f));
+        const videoFile = folderFiles.find(f => /^intro\./i.test(f)) ?? "intro.mp4";
+        const transitionFile = folderFiles.find(f => /^transition\./i.test(f));
+        const idleFile = folderFiles.find(f => /^idle\./i.test(f));
         return {
           id: e.name,
           name: boyName.charAt(0).toUpperCase() + boyName.slice(1),
-          video: `${basePath}/${videoFile}`,
+          video: `${base}/${videoFile}`,
+          ...(transitionFile && { transitionVideo: `${base}/${transitionFile}` }),
+          ...(idleFile && { idleVideo: `${base}/${idleFile}` }),
         };
       });
 
